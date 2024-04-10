@@ -1,0 +1,106 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
+#include "device_launch_parameters.h"
+#include <omp.h>
+ 
+#define INT_MAX 2147483647
+ 
+typedef struct {
+    int dist;
+    int prev_node;
+    int visited;
+} NodeInfo;
+ 
+_global_ void dijkstra_kernel(int* dist, NodeInfo* node_info, int size, int start, int stop) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= (stop - start)) return;
+ 
+    int current_node = start + tid;
+    node_info[current_node].dist = INT_MAX;
+    node_info[current_node].prev_node = -1;
+    node_info[current_node].visited = 0;
+ 
+    node_info[start].dist = 0;
+ 
+    for (int i = 0; i < size; i++) {
+        int u = -1, min_dist = INT_MAX;
+        for (int j = start; j < stop; j++) {
+            if (!node_info[j].visited && node_info[j].dist < min_dist) {
+                u = j;
+                min_dist = node_info[j].dist;
+            }
+        }
+ 
+        if (u == -1) break;
+        node_info[u].visited = 1;
+ 
+        for (int j = start; j < stop; j++) {
+            if (!node_info[j].visited && dist[u * size + j] && node_info[u].dist != INT_MAX &&
+                node_info[u].dist + dist[u * size + j] < node_info[j].dist) {
+                node_info[j].dist = node_info[u].dist + dist[u * size + j];
+                node_info[j].prev_node = u;
+            }
+        }
+    }
+}
+ 
+int main() {
+    int number_of_nodes;
+    printf("Enter the number of nodes: ");
+    scanf("%d", &number_of_nodes);
+ 
+    int* dist_host = (int*)malloc(number_of_nodes * number_of_nodes * sizeof(int));
+    printf("Enter the adjacency matrix (%d x %d):\n", number_of_nodes, number_of_nodes);
+    for (int i = 0; i < number_of_nodes; i++) {
+        for (int j = 0; j < number_of_nodes; j++) {
+            scanf("%d", &dist_host[i * number_of_nodes + j]);
+        }
+    }
+ 
+    int threads_per_block = 256;
+    int blocks_per_grid = (number_of_nodes + threads_per_block - 1) / threads_per_block;
+ 
+    int* dist_device;
+    cudaMalloc((void**)&dist_device, number_of_nodes * number_of_nodes * sizeof(int));
+    cudaMemcpy(dist_device, dist_host, number_of_nodes * number_of_nodes * sizeof(int), cudaMemcpyHostToDevice);
+ 
+    NodeInfo* node_info_host = (NodeInfo*)malloc(number_of_nodes * sizeof(NodeInfo));
+    NodeInfo* node_info_device;
+    cudaMalloc((void**)&node_info_device, number_of_nodes * sizeof(NodeInfo));
+ 
+    double time_from, time_to, elapsed_time = 0.0;
+    time_from = omp_get_wtime();
+ 
+    dijkstra_kernel << <blocks_per_grid, threads_per_block >> > (dist_device, node_info_device, number_of_nodes, 0, number_of_nodes);
+ 
+    time_to = omp_get_wtime();
+    elapsed_time = time_to - time_from;
+    printf("Elapsed time: %.6f seconds.\n", elapsed_time);
+ 
+    cudaMemcpy(node_info_host, node_info_device, number_of_nodes * sizeof(NodeInfo), cudaMemcpyDeviceToHost);
+ 
+    // Process results
+    printf("Shortest path distances:\n");
+    for (int i = 0; i < number_of_nodes; i++) {
+        printf("Node %d: %d\n", i, node_info_host[i].dist);
+    }
+ 
+    printf("\nShortest path and distance from source to each node:\n");
+    for (int i = 0; i < number_of_nodes; i++) {
+        printf("Path from source to node %d: ", i);
+        int current_node = i;
+        while (current_node != -1) {
+            printf("%d ", current_node);
+            current_node = node_info_host[current_node].prev_node;
+        }
+        printf("\nDistance: %d\n", node_info_host[i].dist);
+    }
+ 
+    cudaFree(dist_device);
+    cudaFree(node_info_device);
+    free(dist_host);
+    free(node_info_host);
+ 
+    return 0;
+}
